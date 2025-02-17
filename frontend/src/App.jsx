@@ -1,14 +1,18 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
 import "./App.css";
-
 import ResumeEnhancer from "./components/ResumeEnhancer";
+import LandingPage from "./components/LandingPage";
 
 function App() {
+  const [showResume, setShowResume] = useState(false);
+
   return (
     <div className="app-container">
-      <ResumeEnhancer />
+      {showResume ? (
+        <ResumeEnhancer />
+      ) : (
+        <LandingPage onGetStarted={() => setShowResume(true)} />
+      )}
     </div>
   );
 }
