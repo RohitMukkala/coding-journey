@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+PyPDF2
+pdfplumber
+spacy
+scikit-learn
+nltk
+python-docx
+python-multipart
+reportlab
