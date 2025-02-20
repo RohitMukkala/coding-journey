@@ -3,7 +3,10 @@ import axios from "axios";
 import TextareaAutosize from "react-textarea-autosize";
 import "./ResumeEnhancer.css";
 
-const BACKEND_URL = "https://coding-journey-ergf.onrender.com"; // Add backend URL
+const BACKEND_URL =
+  process.env.NODE_ENV === "development"
+    ? "http://localhost:8000"
+    : "https://coding-journey-ergf.onrender.com"; // Add backend URL
 
 // Add icons for different sections
 const Icons = {

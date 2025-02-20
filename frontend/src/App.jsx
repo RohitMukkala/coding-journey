@@ -10,6 +10,18 @@ import Navbar from "./components/Navbar";
 import ResumeEnhancer from "./components/ResumeEnhancer";
 import LandingPage from "./components/LandingPage";
 import Dashboard from "./components/Dashboard";
+import Login from "./components/Auth/Login";
+import SignUp from "./components/Auth/SignUp";
+import Settings from "./components/Settings";
+
+// Protected Route component
+const ProtectedRoute = ({ children }) => {
+  const token = localStorage.getItem("token");
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+};
 
 function App() {
   const [showResume, setShowResume] = useState(false);
@@ -44,17 +56,33 @@ function App() {
                 onGetStarted: () => setShowResume(true),
               })}
             />
+            <Route path="/login" element={renderWithContainer(Login)} />
+            <Route path="/signup" element={renderWithContainer(SignUp)} />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>{renderWithContainer(Settings)}</ProtectedRoute>
+              }
+            />
             <Route
               path="/dashboard"
-              element={renderWithContainer(Dashboard, {
-                userProfiles: userProfiles,
-              })}
+              element={
+                <ProtectedRoute>
+                  {renderWithContainer(Dashboard, {
+                    userProfiles: userProfiles,
+                  })}
+                </ProtectedRoute>
+              }
             />
             <Route
               path="/resume-enhancer"
-              element={renderWithContainer(ResumeEnhancer, {
-                onBack: () => setShowResume(false),
-              })}
+              element={
+                <ProtectedRoute>
+                  {renderWithContainer(ResumeEnhancer, {
+                    onBack: () => setShowResume(false),
+                  })}
+                </ProtectedRoute>
+              }
             />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

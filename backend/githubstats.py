@@ -1,5 +1,10 @@
 from dotenv import load_dotenv
 import os
+import json
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import requests
 
 # Load environment variables from .env
 load_dotenv()
@@ -9,11 +14,6 @@ print(f"GITHUB_TOKEN: {GITHUB_TOKEN}")  # Debugging line
 
 if not GITHUB_TOKEN:
     raise RuntimeError("GitHub API token is missing. Set GITHUB_TOKEN in a .env file.")
-
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import requests
 
 app = FastAPI()
 
@@ -76,33 +76,47 @@ def process_contributions(data, username):
     except KeyError as e:
         raise HTTPException(status_code=500, detail=f"Error processing contributions data: {str(e)}")
 
-@app.get("/api/{username}/contributions")
+@app.get("/{username}")
+async def get_profile(username: str):
+    try:
+        url = f"https://api.github.com/users/{username}"
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as err:
+        raise HTTPException(status_code=500, detail=f"GitHub API error: {err}")
+
+@app.get("/{username}/contributions")
 async def get_contributions(username: str):
-    query = f"""
-    query {{
-        user(login: "{username}") {{
-            contributionsCollection {{
-                contributionCalendar {{
+    query = """
+    query ($username: String!) {
+        user(login: $username) {
+            contributionsCollection {
+                contributionCalendar {
                     totalContributions
-                    weeks {{
-                        contributionDays {{
+                    weeks {
+                        contributionDays {
                             date
                             contributionCount
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    }}
+                        }
+                    }
+                }
+            }
+        }
+    }
     """
     try:
-        response = requests.post("https://api.github.com/graphql", json={"query": query}, headers=HEADERS)
+        response = requests.post(
+            "https://api.github.com/graphql",
+            json={"query": query, "variables": {"username": username}},
+            headers=HEADERS
+        )
         response.raise_for_status()
         return process_contributions(response.json(), username)
     except requests.exceptions.RequestException as err:
         raise HTTPException(status_code=500, detail=f"GitHub API request error: {err}")
 
-@app.get("/api/{username}/stats")
+@app.get("/{username}/stats")
 async def get_stats(username: str):
     try:
         repos_url = f"https://api.github.com/users/{username}/repos?per_page=100"
@@ -117,7 +131,7 @@ async def get_stats(username: str):
     except requests.exceptions.RequestException as err:
         raise HTTPException(status_code=500, detail=f"GitHub API error: {err}")
 
-@app.get("/api/{username}/languages")
+@app.get("/{username}/languages")
 async def get_languages(username: str):
     try:
         languages = {}
@@ -148,3 +162,31 @@ async def get_languages(username: str):
     
     except requests.exceptions.RequestException as err:
         raise HTTPException(status_code=500, detail=f"GitHub API error: {err}")
+
+@app.get("/{username}/all")
+async def get_all_github_data(username: str):
+    """Get all GitHub data for a user in a single request."""
+    try:
+        # Fetch basic profile data
+        profile = await get_profile(username)
+        
+        # Fetch contributions data
+        contributions = await get_contributions(username)
+        
+        # Fetch stats data
+        stats = await get_stats(username)
+        
+        # Fetch languages data
+        languages = await get_languages(username)
+        
+        # Combine all data
+        return {
+            "profile": profile,
+            "contributions": contributions,
+            "stats": stats,
+            "languages": languages
+        }
+    except HTTPException as err:
+        raise err
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Error fetching GitHub data: {str(err)}")

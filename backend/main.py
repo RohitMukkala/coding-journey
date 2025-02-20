@@ -1,37 +1,256 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+# ✅ Run with:
+# uvicorn main:app --reload
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Any
 import os
 import spacy
 import pdfplumber
-import uuid  # Unique temp filenames
+import uuid
+import requests
 from docx import Document
 from sklearn.feature_extraction.text import TfidfVectorizer
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.colors import HexColor
 from reportlab.platypus.paragraph import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT  # Add text alignment constants
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from routes import coding_profiles
+from database import engine, SessionLocal
+from models import Base, User as DBUser
+from schemas import UserCreate, Token, UserUpdate, User
+from auth import hash_password, create_access_token, verify_password, get_current_user
+from githubstats import app as github_app
+from datetime import datetime, timedelta
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
-# ✅ CORS Configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for debugging
+    allow_origins=["http://localhost:5173"],  # Add your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Load spaCy NLP model
+# Load spaCy NLP model
 nlp = spacy.load("en_core_web_sm")
 
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Authentication routes
+@app.post("/signup", response_model=Token)
+def signup(user_data: UserCreate, db: Session = Depends(get_db)):
+    # Check if username already exists
+    existing_username = db.query(DBUser).filter(DBUser.username == user_data.username).first()
+    if existing_username:
+        raise HTTPException(status_code=400, detail="Username already taken")
+
+    # Check if email already exists
+    existing_email = db.query(DBUser).filter(DBUser.email == user_data.email).first()
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    try:
+        # Hash the password
+        hashed_password = hash_password(user_data.password)
+
+        # Create new user
+        new_user = DBUser(username=user_data.username, email=user_data.email, password_hash=hashed_password)
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        # Generate JWT Token
+        access_token = create_access_token({"sub": new_user.email})
+
+        return {"access_token": access_token, "token_type": "bearer"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"An error occurred during signup: {str(e)}")
+
+@app.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # Check if user exists
+    user = db.query(DBUser).filter(DBUser.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # Generate JWT Token
+    access_token = create_access_token({"sub": user.email})
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/me")
+async def read_users_me(current_user: DBUser = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "github_username": current_user.github_username,
+        "leetcode_username": current_user.leetcode_username,
+        "codechef_username": current_user.codechef_username,
+        "codeforces_username": current_user.codeforces_username,
+        "profile_picture": current_user.profile_picture
+    }
+
+# Coding Profiles Routes
+def get_leetcode_data(username: str) -> Dict[str, Any]:
+    url = "https://leetcode.com/graphql"
+    headers = {"Content-Type": "application/json"}
+    query = """
+    query getUserProfile($username: String!) {
+      matchedUser(username: $username) {
+        submitStatsGlobal {
+          acSubmissionNum {
+            difficulty
+            count
+          }
+        }
+        tagProblemCounts {
+          advanced {
+            tagName
+            problemsSolved
+          }
+        }
+      }
+    }
+    """
+    variables = {"username": username}
+    
+    try:
+        response = requests.post(url, json={"query": query, "variables": variables}, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        if "data" in data and data["data"]["matchedUser"] is not None:
+            user_data = data["data"]["matchedUser"]
+            submissions = user_data["submitStatsGlobal"]["acSubmissionNum"]
+            
+            submission_data = {
+                sub["difficulty"].lower(): sub["count"] 
+                for sub in submissions
+            }
+            
+            return {
+                "totalSolved": submission_data.get("all", 0),
+                "easySolved": submission_data.get("easy", 0),
+                "mediumSolved": submission_data.get("medium", 0),
+                "hardSolved": submission_data.get("hard", 0),
+                "easyPercentage": round(submission_data.get("easy", 0) / submission_data.get("all", 1) * 100, 1),
+                "mediumPercentage": round(submission_data.get("medium", 0) / submission_data.get("all", 1) * 100, 1),
+                "hardPercentage": round(submission_data.get("hard", 0) / submission_data.get("all", 1) * 100, 1)
+            }
+        else:
+            raise HTTPException(status_code=404, detail="LeetCode user not found")
+            
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch LeetCode data: {str(e)}")
+
+def get_codeforces_data(username: str) -> Dict[str, Any]:
+    user_status_url = f"https://codeforces.com/api/user.status?handle={username}"
+    user_rating_url = f"https://codeforces.com/api/user.rating?handle={username}"
+
+    try:
+        user_status_response = requests.get(user_status_url)
+        user_status_response.raise_for_status()
+        user_status_data = user_status_response.json()
+        
+        if user_status_data.get('status') != 'OK':
+            raise HTTPException(status_code=404, detail=user_status_data.get('comment', 'Codeforces user not found'))
+
+        solved_problems = {}
+        for submission in user_status_data['result']:
+            if submission.get('verdict') == 'OK':
+                problem = submission['problem']
+                problem_id = f"{problem['contestId']}{problem['index']}"
+                if problem_id not in solved_problems:
+                    index = problem.get('index', '')
+                    name = problem.get('name', 'Unknown')
+                    full_name = f"{index}. {name}" if index else name
+                    solved_problems[problem_id] = {
+                        'name': full_name,
+                        'difficulty': problem.get('rating', 'No rating')
+                    }
+
+        user_rating_response = requests.get(user_rating_url)
+        user_rating_response.raise_for_status()
+        user_rating_data = user_rating_response.json()
+        
+        if user_rating_data.get('status') != 'OK':
+            raise HTTPException(status_code=404, detail=user_rating_data.get('comment', 'Codeforces user not found'))
+
+        rating_history = user_rating_data['result']
+        current_rating = rating_history[-1]['newRating'] if rating_history else None
+
+        return {
+            "problems_solved": len(solved_problems),
+            "current_rating": current_rating,
+            "example_problems": list(solved_problems.values())[:5]
+        }
+        
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Codeforces data: {str(e)}")
+
+def get_codechef_data(username: str) -> Dict[str, Any]:
+    url = f"https://codechef-api.vercel.app/handle/{username}"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data:
+            raise HTTPException(status_code=404, detail="CodeChef user not found")
+            
+        return {
+            "currentRating": data.get("currentRating"),
+            "highestRating": data.get("highestRating"),
+            "globalRank": data.get("globalRank"),
+            "countryRank": data.get("countryRank"),
+            "stars": data.get("stars")
+        }
+        
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch CodeChef data: {str(e)}")
+
+@app.get("/api/leetcode/{username}")
+async def get_leetcode_stats(username: str):
+    try:
+        return get_leetcode_data(username)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/codeforces/{username}")
+async def get_codeforces_stats(username: str):
+    try:
+        return get_codeforces_data(username)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/codechef/{username}")
+async def get_codechef_stats(username: str):
+    try:
+        return get_codechef_data(username)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ✅ Extract text from PDF securely
 def extract_text_from_pdf(file):
@@ -650,5 +869,71 @@ async def upload_jd(file: UploadFile = File(...)):
         raise he
     except Exception as e:
         raise HTTPException(500, f"Error processing JD file: {str(e)}")
-# ✅ Run with:
-# uvicorn main:app --reload
+
+# Add coding profiles routes
+app.include_router(coding_profiles.router, prefix="/api", tags=["coding_profiles"])
+
+@app.put("/settings", response_model=User)
+async def update_settings(
+    user_data: UserUpdate,
+    current_user: DBUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user = db.query(DBUser).filter(DBUser.id == current_user.id).first()
+    
+    # Check if new username is taken (if username is being updated)
+    if user_data.username and user_data.username != user.username:
+        existing_user = db.query(DBUser).filter(DBUser.username == user_data.username).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already taken")
+    
+    # Update user fields
+    for field, value in user_data.dict(exclude_unset=True).items():
+        setattr(user, field, value)
+    
+    try:
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/settings/profile-picture")
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    current_user: DBUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Validate file type
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    # Create uploads directory if it doesn't exist
+    upload_dir = "uploads/profile_pictures"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Generate unique filename
+    file_extension = file.filename.split(".")[-1]
+    filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = os.path.join(upload_dir, filename)
+    
+    # Save file
+    try:
+        contents = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(contents)
+            
+        # Update user's profile picture URL
+        user = db.query(DBUser).filter(DBUser.id == current_user.id).first()
+        user.profile_picture = f"/uploads/profile_pictures/{filename}"
+        db.commit()
+        
+        return {"profile_picture": user.profile_picture}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Mount the GitHub routes
+app.mount("/api/github", github_app)
+
+
