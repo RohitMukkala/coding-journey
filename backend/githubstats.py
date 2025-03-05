@@ -2,9 +2,23 @@ from dotenv import load_dotenv
 import os
 import json
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+from sqlalchemy.orm import Session
+from database import get_db
+from models import CodingProfile
+from sqlalchemy import and_
+from auth import get_current_user
+from models import User as DBUser
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env
 load_dotenv()
@@ -75,6 +89,49 @@ def process_contributions(data, username):
         }
     except KeyError as e:
         raise HTTPException(status_code=500, detail=f"Error processing contributions data: {str(e)}")
+
+def save_github_data(db: Session, user_id: int, username: str, profile_data: dict, contributions_data: dict, stats_data: dict, languages_data: dict):
+    """Save or update GitHub profile data in the database."""
+    logger.info(f"Attempting to save GitHub data for user {user_id} with username {username}")
+    logger.debug(f"Contributions data: {contributions_data}")
+    logger.debug(f"Stats data: {stats_data}")
+    logger.debug(f"Languages data: {languages_data}")
+    
+    profile = db.query(CodingProfile).filter(
+        and_(
+            CodingProfile.user_id == user_id,
+            CodingProfile.platform == "github"
+        )
+    ).first()
+    
+    if not profile:
+        logger.info(f"Creating new GitHub profile for user {user_id}")
+        profile = CodingProfile(
+            user_id=user_id,
+            platform="github",
+            username=username
+        )
+        db.add(profile)
+    else:
+        logger.info(f"Updating existing GitHub profile for user {user_id}")
+    
+    # Update fields
+    profile.last_updated = datetime.utcnow()
+    profile.total_contributions = contributions_data.get("total_contributions")
+    profile.current_streak = contributions_data.get("current_streak")
+    profile.longest_streak = contributions_data.get("longest_streak")
+    profile.total_stars = stats_data.get("stars")
+    profile.total_forks = stats_data.get("forks")
+    profile.languages = languages_data
+    
+    try:
+        db.commit()
+        logger.info(f"Successfully saved GitHub profile data for user {user_id}")
+        logger.debug(f"Saved profile data: {profile.__dict__}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to save GitHub profile data for user {user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save GitHub data: {str(e)}")
 
 @app.get("/{username}")
 async def get_profile(username: str):
@@ -164,22 +221,25 @@ async def get_languages(username: str):
         raise HTTPException(status_code=500, detail=f"GitHub API error: {err}")
 
 @app.get("/{username}/all")
-async def get_all_github_data(username: str):
+async def get_all_github_data(
+    username: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user)
+):
     """Get all GitHub data for a user in a single request."""
     try:
-        # Fetch basic profile data
+        # Fetch all data
         profile = await get_profile(username)
-        
-        # Fetch contributions data
         contributions = await get_contributions(username)
-        
-        # Fetch stats data
         stats = await get_stats(username)
-        
-        # Fetch languages data
         languages = await get_languages(username)
         
-        # Combine all data
+        # Save data if user is authenticated
+        if current_user:
+            logger.info(f"Saving GitHub data for user {current_user.id}")
+            save_github_data(db, current_user.id, username, profile, contributions, stats, languages)
+        
+        # Return combined data
         return {
             "profile": profile,
             "contributions": contributions,
@@ -189,4 +249,5 @@ async def get_all_github_data(username: str):
     except HTTPException as err:
         raise err
     except Exception as err:
+        logger.error(f"Error in get_all_github_data: {str(err)}")
         raise HTTPException(status_code=500, detail=f"Error fetching GitHub data: {str(err)}")

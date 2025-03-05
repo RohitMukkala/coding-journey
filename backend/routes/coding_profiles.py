@@ -1,8 +1,93 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any
 import requests
+from sqlalchemy.orm import Session
+from datetime import datetime
+from database import get_db
+from models import CodingProfile
+from sqlalchemy import and_
+from auth import get_current_user
+from models import User as DBUser
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+def save_profile_data(db: Session, user_id: int, platform: str, username: str, data: Dict[str, Any]):
+    """Save or update coding profile data in the database."""
+    logger.info(f"Attempting to save {platform} data for user {user_id} with username {username}")
+    logger.debug(f"Received data: {data}")
+    
+    profile = db.query(CodingProfile).filter(
+        and_(
+            CodingProfile.user_id == user_id,
+            CodingProfile.platform == platform
+        )
+    ).first()
+    
+    if not profile:
+        logger.info(f"Creating new {platform} profile for user {user_id}")
+        profile = CodingProfile(
+            user_id=user_id,
+            platform=platform,
+            username=username
+        )
+        db.add(profile)
+    else:
+        logger.info(f"Updating existing {platform} profile for user {user_id}")
+    
+    # Update common fields
+    profile.last_updated = datetime.utcnow()
+    
+    # Update platform-specific fields
+    if platform == "github":
+        logger.debug("Updating GitHub fields")
+        profile.total_contributions = data.get("contributions", {}).get("total_contributions")
+        profile.current_streak = data.get("contributions", {}).get("current_streak")
+        profile.longest_streak = data.get("contributions", {}).get("longest_streak")
+        profile.total_stars = data.get("stats", {}).get("stars")
+        profile.total_forks = data.get("stats", {}).get("forks")
+        profile.languages = data.get("languages")
+    
+    elif platform == "leetcode":
+        logger.debug("Updating LeetCode fields")
+        profile.total_problems_solved = data.get("totalSolved")
+        profile.easy_solved = data.get("easySolved")
+        profile.medium_solved = data.get("mediumSolved")
+        profile.hard_solved = data.get("hardSolved")
+        profile.easy_percentage = data.get("easyPercentage")
+        profile.medium_percentage = data.get("mediumPercentage")
+        profile.hard_percentage = data.get("hardPercentage")
+    
+    elif platform == "codechef":
+        logger.debug("Updating CodeChef fields")
+        profile.current_rating = data.get("currentRating")
+        profile.highest_rating = data.get("highestRating")
+        profile.global_rank = data.get("globalRank")
+        profile.country_rank = data.get("countryRank")
+        profile.stars = data.get("stars")
+    
+    elif platform == "codeforces":
+        logger.debug("Updating Codeforces fields")
+        profile.codeforces_rating = data.get("current_rating")
+        profile.codeforces_max_rating = data.get("max_rating")
+        profile.problems_solved_count = data.get("problems_solved")
+        profile.contest_rating = data.get("contest_rating")
+    
+    try:
+        db.commit()
+        logger.info(f"Successfully saved {platform} profile data for user {user_id}")
+        logger.debug(f"Saved profile data: {profile.__dict__}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to save {platform} profile data for user {user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save profile data: {str(e)}")
 
 def get_leetcode_data(username: str) -> Dict[str, Any]:
     url = "https://leetcode.com/graphql"
@@ -14,12 +99,6 @@ def get_leetcode_data(username: str) -> Dict[str, Any]:
           acSubmissionNum {
             difficulty
             count
-          }
-        }
-        tagProblemCounts {
-          advanced {
-            tagName
-            problemsSolved
           }
         }
       }
@@ -36,7 +115,6 @@ def get_leetcode_data(username: str) -> Dict[str, Any]:
             user_data = data["data"]["matchedUser"]
             submissions = user_data["submitStatsGlobal"]["acSubmissionNum"]
             
-            # Process submission data
             submission_data = {
                 sub["difficulty"].lower(): sub["count"] 
                 for sub in submissions
@@ -128,13 +206,37 @@ def get_codechef_data(username: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Failed to fetch CodeChef data: {str(e)}")
 
 @router.get("/leetcode/{username}")
-async def get_leetcode_stats(username: str):
-    return get_leetcode_data(username)
+async def get_leetcode_stats(
+    username: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user)
+):
+    data = get_leetcode_data(username)
+    if current_user:
+        save_profile_data(db, current_user.id, "leetcode", username, data)
+    return data
 
 @router.get("/codeforces/{username}")
-async def get_codeforces_stats(username: str):
-    return get_codeforces_data(username)
+async def get_codeforces_stats(
+    username: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user)
+):
+    try:
+        data = get_codeforces_data(username)
+        if current_user:
+            save_profile_data(db, current_user.id, "codeforces", username, data)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/codechef/{username}")
-async def get_codechef_stats(username: str):
-    return get_codechef_data(username) 
+async def get_codechef_stats(
+    username: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user)
+):
+    data = get_codechef_data(username)
+    if current_user:
+        save_profile_data(db, current_user.id, "codechef", username, data)
+    return data 

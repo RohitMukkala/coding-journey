@@ -1,7 +1,7 @@
 # ✅ Run with:
 # uvicorn main:app --reload
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -23,12 +23,13 @@ from reportlab.lib.colors import HexColor
 from reportlab.platypus.paragraph import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from routes import coding_profiles
-from database import engine, SessionLocal
+from database import engine, SessionLocal, get_db
 from models import Base, User as DBUser
 from schemas import UserCreate, Token, UserUpdate, User
 from auth import hash_password, create_access_token, verify_password, get_current_user
 from githubstats import app as github_app
 from datetime import datetime, timedelta
+from routes.platform_routes import router as platform_router
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -231,26 +232,8 @@ def get_codechef_data(username: str) -> Dict[str, Any]:
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch CodeChef data: {str(e)}")
 
-@app.get("/api/leetcode/{username}")
-async def get_leetcode_stats(username: str):
-    try:
-        return get_leetcode_data(username)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/codeforces/{username}")
-async def get_codeforces_stats(username: str):
-    try:
-        return get_codeforces_data(username)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/codechef/{username}")
-async def get_codechef_stats(username: str):
-    try:
-        return get_codechef_data(username)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Mount platform routes
+app.include_router(platform_router, prefix="/api")
 
 # ✅ Extract text from PDF securely
 def extract_text_from_pdf(file):
@@ -483,11 +466,11 @@ async def upload_resume(file: UploadFile = File(...)):
     try:
         filename = file.filename.lower()
         print(f"Processing resume file: {filename}")
-        
+
         if not (filename.endswith('.pdf') or filename.endswith('.docx')):
             raise HTTPException(400, "Invalid file format. Please upload a PDF or DOCX file.")
 
-        file.file.seek(0)
+            file.file.seek(0)
         text = ""
         if filename.endswith('.pdf'):
             text = extract_text_from_pdf(file.file)
@@ -580,10 +563,10 @@ async def match_jd(request: ResumeJDRequest):
             " ".join(resume_keywords),
             " ".join(jd_keywords)
         ])
-        
+
         # Compute similarity score
         match_score = (tfidf_matrix[0] @ tfidf_matrix[1].T).toarray()[0][0] * 100
-        
+
         # Find missing keywords with context
         missing_keywords = []
         for keyword in jd_keywords:
@@ -932,8 +915,5 @@ async def upload_profile_picture(
         return {"profile_picture": user.profile_picture}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# Mount the GitHub routes
-app.mount("/api/github", github_app)
 
 

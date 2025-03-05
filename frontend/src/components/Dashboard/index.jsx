@@ -1,139 +1,22 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 import ProfilePanel from "./ProfilePanel";
 import PlatformCard from "./PlatformCard";
 import AchievementShelf from "./AchievementShelf";
 import { useAuth } from "../../context/AuthContext";
-import axiosInstance from "../../utils/axios";
+import { useCodingProfiles } from "../../hooks/useCodingProfiles";
+import { FaSync } from "react-icons/fa";
 import "./styles.css";
 
 const Dashboard = () => {
   const { user } = useAuth();
-  const [profileData, setProfileData] = useState({
-    github: null,
-    leetcode: null,
-    codechef: null,
-    codeforces: null,
-  });
-  const [loading, setLoading] = useState({
-    github: false,
-    leetcode: false,
-    codechef: false,
-    codeforces: false,
-  });
+  const { profileData, loading, updating } = useCodingProfiles(user);
   const [activeTab, setActiveTab] = useState("overview");
 
-  const fetchGitHubProfile = async (username) => {
-    if (!username) return null;
-    setLoading((prev) => ({ ...prev, github: true }));
-    try {
-      console.log("Fetching GitHub data for username:", username);
-      // Use the new optimized endpoint that fetches all data in parallel
-      const response = await axiosInstance.get(`/api/github/${username}/all`);
-      console.log("GitHub data fetched:", response.data);
-      return response.data;
-    } catch (error) {
-      console.error("Error fetching GitHub profile:", error.response || error);
-      return null;
-    } finally {
-      setLoading((prev) => ({ ...prev, github: false }));
-    }
+  // Function to manually trigger a refresh
+  const handleSync = () => {
+    window.location.reload();
   };
-
-  const fetchLeetCodeProfile = async (username) => {
-    if (!username) return null;
-    setLoading((prev) => ({ ...prev, leetcode: true }));
-    try {
-      console.log("Fetching LeetCode data for username:", username);
-      const response = await axiosInstance.get(`/api/leetcode/${username}`);
-      console.log("LeetCode data fetched:", response.data);
-      return response.data;
-    } catch (error) {
-      console.error(
-        "Error fetching LeetCode profile:",
-        error.response || error
-      );
-      return null;
-    } finally {
-      setLoading((prev) => ({ ...prev, leetcode: false }));
-    }
-  };
-
-  const fetchCodeChefProfile = async (username) => {
-    if (!username) return null;
-    setLoading((prev) => ({ ...prev, codechef: true }));
-    try {
-      console.log("Fetching CodeChef data for username:", username);
-      const response = await axiosInstance.get(`/api/codechef/${username}`);
-      console.log("CodeChef data fetched:", response.data);
-      return response.data;
-    } catch (error) {
-      console.error(
-        "Error fetching CodeChef profile:",
-        error.response || error
-      );
-      return null;
-    } finally {
-      setLoading((prev) => ({ ...prev, codechef: false }));
-    }
-  };
-
-  const fetchCodeForcesProfile = async (username) => {
-    if (!username) return null;
-    setLoading((prev) => ({ ...prev, codeforces: true }));
-    try {
-      console.log("Fetching CodeForces data for username:", username);
-      const response = await axiosInstance.get(`/api/codeforces/${username}`);
-      console.log("CodeForces data fetched:", response.data);
-      return response.data;
-    } catch (error) {
-      console.error(
-        "Error fetching CodeForces profile:",
-        error.response || error
-      );
-      return null;
-    } finally {
-      setLoading((prev) => ({ ...prev, codeforces: false }));
-    }
-  };
-
-  useEffect(() => {
-    const fetchAllProfiles = async () => {
-      if (!user) return;
-
-      console.log("Current user data:", user);
-      console.log("Usernames:", {
-        github: user.github_username,
-        leetcode: user.leetcode_username,
-        codechef: user.codechef_username,
-        codeforces: user.codeforces_username,
-      });
-
-      const [githubData, leetcodeData, codechefData, codeforcesData] =
-        await Promise.all([
-          fetchGitHubProfile(user.github_username),
-          fetchLeetCodeProfile(user.leetcode_username),
-          fetchCodeChefProfile(user.codechef_username),
-          fetchCodeForcesProfile(user.codeforces_username),
-        ]);
-
-      console.log("All profile data fetched:", {
-        github: githubData,
-        leetcode: leetcodeData,
-        codechef: codechefData,
-        codeforces: codeforcesData,
-      });
-
-      setProfileData({
-        github: githubData,
-        leetcode: leetcodeData,
-        codechef: codechefData,
-        codeforces: codeforcesData,
-      });
-    };
-
-    fetchAllProfiles();
-  }, [user]);
 
   if (!user) {
     return (
@@ -170,6 +53,17 @@ const Dashboard = () => {
               {platform.charAt(0).toUpperCase() + platform.slice(1)}
             </motion.button>
           ))}
+          <motion.button
+            className="sync-button"
+            onClick={handleSync}
+            disabled={updating}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            title="Sync all profiles"
+          >
+            <FaSync className={updating ? "rotating" : ""} />
+            {updating ? "Syncing..." : "Sync Now"}
+          </motion.button>
         </nav>
 
         <div className="platform-cards">
