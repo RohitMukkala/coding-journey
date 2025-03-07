@@ -432,3 +432,27 @@
     transform: rotate(360deg);
   }
 }
+
+.error-state {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid rgba(255, 0, 0, 0.2);
+  margin: 1rem 0;
+}
+
+.error-state p {
+  color: #ff6b6b;
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+
+.default-data {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.default-data .stat-row {
+  color: rgba(255, 255, 255, 0.7);
+}

@@ -62,41 +62,71 @@ const PlatformCard = ({ platform, data, loading, username, expanded }) => {
         return (
           <div className="github-stats">
             <div className="username-display">@{username}</div>
-            <div className="stat-row">
-              <span>Contributions</span>
-              <span>{data.contributions?.total_contributions || 0}</span>
-            </div>
-            <div className="stat-row">
-              <span>Current Streak</span>
-              <span>{data.contributions?.current_streak || 0} days</span>
-            </div>
-            <div className="stat-row">
-              <span>Stars</span>
-              <span>{data.stats?.stars || 0}</span>
-            </div>
-            <div className="stat-row">
-              <span>Forks</span>
-              <span>{data.stats?.forks || 0}</span>
-            </div>
-            {data.languages && Object.keys(data.languages).length > 0 && (
-              <div className="languages">
-                <h4>Top Languages</h4>
-                {Object.entries(data.languages)
-                  .sort(([, a], [, b]) => b - a)
-                  .slice(0, 5)
-                  .map(([lang, percent]) => (
-                    <div key={lang} className="language-bar">
-                      <div className="language-name">{lang}</div>
-                      <div className="bar">
-                        <div
-                          className="fill"
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                      <div className="percentage">{percent}%</div>
-                    </div>
-                  ))}
+            {data.error ? (
+              <div className="error-state">
+                <p>{data.error}</p>
+                <div className="default-data">
+                  <div className="stat-row">
+                    <span>Contributions</span>
+                    <span>
+                      {data.default_data.contributions.total_contributions}
+                    </span>
+                  </div>
+                  <div className="stat-row">
+                    <span>Current Streak</span>
+                    <span>
+                      {data.default_data.contributions.current_streak} days
+                    </span>
+                  </div>
+                  <div className="stat-row">
+                    <span>Stars</span>
+                    <span>{data.default_data.stats.stars}</span>
+                  </div>
+                  <div className="stat-row">
+                    <span>Forks</span>
+                    <span>{data.default_data.stats.forks}</span>
+                  </div>
+                </div>
               </div>
+            ) : (
+              <>
+                <div className="stat-row">
+                  <span>Contributions</span>
+                  <span>{data.contributions?.total_contributions || 0}</span>
+                </div>
+                <div className="stat-row">
+                  <span>Current Streak</span>
+                  <span>{data.contributions?.current_streak || 0} days</span>
+                </div>
+                <div className="stat-row">
+                  <span>Stars</span>
+                  <span>{data.stats?.stars || 0}</span>
+                </div>
+                <div className="stat-row">
+                  <span>Forks</span>
+                  <span>{data.stats?.forks || 0}</span>
+                </div>
+                {data.languages && Object.keys(data.languages).length > 0 && (
+                  <div className="languages">
+                    <h4>Top Languages</h4>
+                    {Object.entries(data.languages)
+                      .sort(([, a], [, b]) => b - a)
+                      .slice(0, 5)
+                      .map(([lang, percent]) => (
+                        <div key={lang} className="language-bar">
+                          <div className="language-name">{lang}</div>
+                          <div className="bar">
+                            <div
+                              className="fill"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                          <div className="percentage">{percent}%</div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         );

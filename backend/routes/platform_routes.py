@@ -293,91 +293,174 @@ async def fetch_codeforces_data(username: str) -> Dict[str, Any]:
         }
 
 async def fetch_github_data(username: str) -> Dict[str, Any]:
-    """Fetch GitHub data from API."""
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"}
-        
-        # Fetch basic profile
-        profile_response = await client.get(f"https://api.github.com/users/{username}", headers=headers)
-        profile_data = profile_response.json()
-        
-        # Fetch contributions via GraphQL
-        query = """
-        query ($username: String!) {
-            user(login: $username) {
-                contributionsCollection {
-                    contributionCalendar {
-                        totalContributions
-                        weeks {
-                            contributionDays {
-                                date
-                                contributionCount
+    """Fetch GitHub data from API with retry logic and error handling."""
+    max_retries = 3
+    retry_delay = 2
+    default_data = {
+        "profile": {
+            "login": username,
+            "public_repos": 0,
+            "followers": 0,
+            "following": 0
+        },
+        "contributions": {
+            "total_contributions": 0,
+            "current_streak": 0,
+            "longest_streak": 0
+        },
+        "stats": {
+            "stars": 0,
+            "forks": 0
+        },
+        "languages": {}
+    }
+
+    async def make_request_with_retry(client, method, url, **kwargs):
+        for attempt in range(max_retries):
+            try:
+                response = await getattr(client, method)(url, **kwargs, timeout=10.0)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                if attempt == max_retries - 1:
+                    logger.error(f"Timeout error after {max_retries} attempts: {url}")
+                    raise
+                await asyncio.sleep(retry_delay)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    raise HTTPException(status_code=404, detail="GitHub user not found")
+                if attempt == max_retries - 1:
+                    logger.error(f"HTTP error after {max_retries} attempts: {e}")
+                    raise
+                await asyncio.sleep(retry_delay)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Unexpected error after {max_retries} attempts: {e}")
+                    raise
+                await asyncio.sleep(retry_delay)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"}
+            
+            try:
+                # Fetch basic profile
+                profile_data = await make_request_with_retry(
+                    client, 
+                    "get",
+                    f"https://api.github.com/users/{username}",
+                    headers=headers
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch GitHub profile: {str(e)}")
+                profile_data = default_data["profile"]
+
+            try:
+                # Fetch contributions via GraphQL
+                query = """
+                query ($username: String!) {
+                    user(login: $username) {
+                        contributionsCollection {
+                            contributionCalendar {
+                                totalContributions
+                                weeks {
+                                    contributionDays {
+                                        date
+                                        contributionCount
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-        """
-        contributions_response = await client.post(
-            "https://api.github.com/graphql",
-            json={"query": query, "variables": {"username": username}},
-            headers=headers
-        )
-        contributions_data = contributions_response.json()
-        
-        # Process contributions
-        calendar = contributions_data.get('data', {}).get('user', {}).get('contributionsCollection', {}).get('contributionCalendar', {})
-        contribution_days = [
-            day for week in calendar.get('weeks', [])
-            for day in week.get('contributionDays', [])
-        ]
-        
-        # Calculate streaks
-        current_streak = 0
-        longest_streak = 0
-        current_consecutive = 0
-        
-        for day in sorted(contribution_days, key=lambda x: x['date']):
-            if day['contributionCount'] > 0:
-                current_consecutive += 1
-                longest_streak = max(longest_streak, current_consecutive)
-            else:
+                """
+                contributions_response = await make_request_with_retry(
+                    client,
+                    "post",
+                    "https://api.github.com/graphql",
+                    json={"query": query, "variables": {"username": username}},
+                    headers=headers
+                )
+                
+                calendar = contributions_response.get('data', {}).get('user', {}).get('contributionsCollection', {}).get('contributionCalendar', {})
+                contribution_days = [
+                    day for week in calendar.get('weeks', [])
+                    for day in week.get('contributionDays', [])
+                ]
+                
+                current_streak = 0
+                longest_streak = 0
                 current_consecutive = 0
-        
-        current_streak = current_consecutive
-        
-        # Fetch repositories for stars and forks
-        repos_response = await client.get(f"https://api.github.com/users/{username}/repos?per_page=100", headers=headers)
-        repos = repos_response.json()
-        
-        total_stars = sum(repo.get('stargazers_count', 0) for repo in repos)
-        total_forks = sum(repo.get('forks_count', 0) for repo in repos)
-        
-        # Fetch languages
-        languages = {}
-        for repo in repos:
-            lang_response = await client.get(repo['languages_url'], headers=headers)
-            lang_data = lang_response.json()
-            for lang, bytes in lang_data.items():
-                languages[lang] = languages.get(lang, 0) + bytes
-        
-        if languages:
-            total = sum(languages.values())
-            languages = {lang: round((count / total) * 100, 2) for lang, count in languages.items()}
-        
+                
+                for day in sorted(contribution_days, key=lambda x: x['date']):
+                    if day['contributionCount'] > 0:
+                        current_consecutive += 1
+                        longest_streak = max(longest_streak, current_consecutive)
+                    else:
+                        current_consecutive = 0
+                
+                current_streak = current_consecutive
+                contributions_data = {
+                    "total_contributions": calendar.get('totalContributions', 0),
+                    "current_streak": current_streak,
+                    "longest_streak": longest_streak
+                }
+            except Exception as e:
+                logger.error(f"Failed to fetch GitHub contributions: {str(e)}")
+                contributions_data = default_data["contributions"]
+
+            try:
+                # Fetch repositories for stars and forks
+                repos = await make_request_with_retry(
+                    client,
+                    "get",
+                    f"https://api.github.com/users/{username}/repos?per_page=100",
+                    headers=headers
+                )
+                
+                total_stars = sum(repo.get('stargazers_count', 0) for repo in repos)
+                total_forks = sum(repo.get('forks_count', 0) for repo in repos)
+                stats_data = {"stars": total_stars, "forks": total_forks}
+            except Exception as e:
+                logger.error(f"Failed to fetch GitHub repos: {str(e)}")
+                stats_data = default_data["stats"]
+
+            try:
+                # Fetch languages
+                languages = {}
+                for repo in repos:
+                    try:
+                        lang_data = await make_request_with_retry(
+                            client,
+                            "get",
+                            repo['languages_url'],
+                            headers=headers
+                        )
+                        for lang, bytes in lang_data.items():
+                            languages[lang] = languages.get(lang, 0) + bytes
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch languages for repo {repo.get('name')}: {str(e)}")
+                        continue
+
+                if languages:
+                    total = sum(languages.values())
+                    languages = {lang: round((count / total) * 100, 2) for lang, count in languages.items()}
+            except Exception as e:
+                logger.error(f"Failed to process languages data: {str(e)}")
+                languages = default_data["languages"]
+
+            return {
+                "profile": profile_data,
+                "contributions": contributions_data,
+                "stats": stats_data,
+                "languages": languages
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to fetch GitHub data: {str(e)}")
         return {
-            "profile": profile_data,
-            "contributions": {
-                "total_contributions": calendar.get('totalContributions', 0),
-                "current_streak": current_streak,
-                "longest_streak": longest_streak
-            },
-            "stats": {
-                "stars": total_stars,
-                "forks": total_forks
-            },
-            "languages": languages
+            "error": "Failed to fetch GitHub data",
+            "default_data": default_data
         }
 
 @router.get("/github/{username}")
